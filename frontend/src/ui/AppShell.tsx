@@ -1,7 +1,8 @@
-import { ArrowUp, BookOpen, Check, ChevronRight, Edit3, FileText, PanelLeft, Search, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ArrowUp, BookOpen, Check, ChevronRight, Edit3, ExternalLink, FileText, PanelLeft, Search, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import remarkGfm from "remark-gfm";
+import { Link, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 
 import { approveResearchRun, createFollowup, createResearchRun, getConversation, getResearchEvents, listConversations, sendPlanFeedback } from "../api";
 import { useAppAuth } from "../auth";
@@ -9,11 +10,39 @@ import type { Conversation, ConversationSummary, ResearchEvent, ResearchRunSumma
 
 const pendingPromptKey = "pendingResearchPrompt";
 
+type ReplyTarget = {
+  runId: string;
+  title: string;
+  excerpt: string;
+};
+
+type PlanningState = {
+  prompt: string;
+  mode: "create" | "update";
+  runId?: string;
+};
+
 function formatDuration(seconds: number | null) {
   if (!seconds) return "a moment";
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return minutes > 0 ? `${minutes}m ${rest}s` : `${rest}s`;
+}
+
+function formatReportMarkdown(markdown: string) {
+  return markdown.replace(/(?<!\]\()https?:\/\/[^\s)\]]+/g, (url) => {
+    let label = "Source";
+    try {
+      label = new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      label = "Source";
+    }
+    return `[${label}](${url})`;
+  });
+}
+
+function stripLeadingNumber(value: string) {
+  return value.replace(/^(\s*\d+[\.)]\s*)+/, "");
 }
 
 export function AppShell() {
@@ -33,23 +62,33 @@ export function AppShell() {
   return (
     <div className="app">
       <aside className={sidebarOpen ? "sidebar open" : "sidebar"}>
-        <div className="sidebar-top">
-          <Link className="new-chat" to="/">
-            <Edit3 size={16} />
-            New research
-          </Link>
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar">
-            <X size={18} />
-          </button>
-        </div>
-        <nav className="conversation-list">
-          {conversations.map((item) => (
-            <Link key={item.id} to={`/c/${item.id}`} className="conversation-link">
-              <span>{item.title}</span>
-              <ChevronRight size={14} />
+        <div className="sidebar-panel">
+          <div className="sidebar-brand">
+            <span className="brand-mark" aria-hidden="true" />
+            <span>Deep Research</span>
+          </div>
+          <div className="sidebar-top">
+            <Link className="new-chat" to="/">
+              <Edit3 size={16} />
+              New research
             </Link>
-          ))}
-        </nav>
+            <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar">
+              <X size={18} />
+            </button>
+          </div>
+          <nav className="conversation-list">
+            {conversations.map((item) => (
+              <NavLink
+                key={item.id}
+                to={`/c/${item.id}`}
+                className={({ isActive }) => (isActive ? "conversation-link active" : "conversation-link")}
+              >
+                <span>{item.title}</span>
+                <ChevronRight size={14} />
+              </NavLink>
+            ))}
+          </nav>
+        </div>
       </aside>
 
       <main className="main">
@@ -57,10 +96,7 @@ export function AppShell() {
           <button className="icon-button" onClick={() => setSidebarOpen((value) => !value)} aria-label="Toggle sidebar">
             <PanelLeft size={18} />
           </button>
-          <div className="brand">
-            <span className="brand-mark" aria-hidden="true" />
-            <span>Deep Research</span>
-          </div>
+          <div />
           <div className="user-slot">{userControl}</div>
         </header>
         <Routes>
@@ -78,6 +114,7 @@ function NewChat({ onCreated }: { onCreated: () => Promise<void> }) {
   const [prompt, setPrompt] = useState("");
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [planningState, setPlanningState] = useState<PlanningState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -97,6 +134,8 @@ function NewChat({ onCreated }: { onCreated: () => Promise<void> }) {
     }
     setError(null);
     setIsSubmitting(true);
+    setPrompt("");
+    setPlanningState({ prompt: clean, mode: "create" });
     try {
       const response = await createResearchRun(clean, auth.getToken);
       sessionStorage.removeItem(pendingPromptKey);
@@ -106,7 +145,30 @@ function NewChat({ onCreated }: { onCreated: () => Promise<void> }) {
       setError(err instanceof Error ? err.message : "Could not create research run");
     } finally {
       setIsSubmitting(false);
+      setPlanningState(null);
     }
+  }
+
+  if (planningState) {
+    return (
+      <section className="conversation-screen">
+        <div className="message-stack">
+          <article className="message user-message">
+            <div className="message-content">{planningState.prompt}</div>
+          </article>
+          <PlanningMessage state={planningState} />
+        </div>
+        <div className="composer-dock">
+          <Composer
+            value={prompt}
+            onChange={setPrompt}
+            onSubmit={submit}
+            disabled={isSubmitting}
+            placeholder="Ask a research question..."
+          />
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -126,6 +188,9 @@ function ConversationPage({ onChanged }: { onChanged: () => Promise<void> }) {
   const auth = useAppAuth();
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [planningState, setPlanningState] = useState<PlanningState | null>(null);
+  const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,16 +207,37 @@ function ConversationPage({ onChanged }: { onChanged: () => Promise<void> }) {
       .finally(() => setLoading(false));
   }, [conversationId]);
 
+  useEffect(() => {
+    if (!conversation) return;
+    const hasActiveRun = conversation.pending_runs.some((run) => run.status === "queued" || run.status === "running");
+    if (!hasActiveRun) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [conversation, conversationId]);
+
   async function submitFollowup() {
     if (!conversationId || !prompt.trim()) return;
     const content = prompt.trim();
+    const activeReply = replyTarget;
     setPrompt("");
+    setReplyTarget(null);
+    setIsSubmitting(true);
+    setPlanningState({ prompt: content, mode: activeReply ? "update" : "create", runId: activeReply?.runId });
     try {
-      await createFollowup(conversationId, content, auth.getToken);
+      if (activeReply) {
+        await sendPlanFeedback(activeReply.runId, content, auth.getToken);
+      } else {
+        await createFollowup(conversationId, content, auth.getToken);
+      }
       await refresh();
       await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send message");
+    } finally {
+      setPlanningState(null);
+      setIsSubmitting(false);
     }
   }
 
@@ -168,20 +254,141 @@ function ConversationPage({ onChanged }: { onChanged: () => Promise<void> }) {
     <section className="conversation-screen">
       <div className="message-stack">
         {conversation.messages.map((message) => (
-          <MessageBlock key={message.id} message={message} onRunChanged={handleRunChanged} />
+          <MessageBlock key={message.id} message={message} onRunChanged={handleRunChanged} onEditPlan={setReplyTarget} />
         ))}
         {conversation.pending_runs.map((run) => (
-          <PlanCard key={run.id} run={run} onChanged={handleRunChanged} />
+          <PendingRunBlock
+            key={run.id}
+            run={run}
+            onChanged={handleRunChanged}
+            onEditPlan={setReplyTarget}
+            updatingState={planningState?.mode === "update" && planningState.runId === run.id ? planningState : null}
+          />
         ))}
+        {planningState?.mode === "create" && <PlanningMessage state={planningState} />}
       </div>
       <div className="composer-dock">
-        <Composer value={prompt} onChange={setPrompt} onSubmit={submitFollowup} placeholder="Ask a follow-up..." />
+        <Composer
+          value={prompt}
+          onChange={setPrompt}
+          onSubmit={submitFollowup}
+          placeholder={replyTarget ? "Tell the agent what to change..." : "Ask a follow-up..."}
+          disabled={isSubmitting}
+          replyTarget={replyTarget}
+          onCancelReply={() => setReplyTarget(null)}
+          autoFocusKey={replyTarget?.runId}
+        />
       </div>
     </section>
   );
 }
 
-function MessageBlock({ message, onRunChanged }: { message: Conversation["messages"][number]; onRunChanged: () => Promise<void> }) {
+function PendingRunBlock({
+  run,
+  onChanged,
+  onEditPlan,
+  updatingState
+}: {
+  run: ResearchRunSummary;
+  onChanged: () => Promise<void>;
+  onEditPlan: (target: ReplyTarget) => void;
+  updatingState?: PlanningState | null;
+}) {
+  const history = run.plan_history ?? [];
+  const hasHistory = history.length > 0;
+
+  if (updatingState) {
+    return (
+      <>
+        {history.map((item, index) => (
+          <PlanHistoryBlock key={`${run.id}-history-${index}`} item={item} run={run} />
+        ))}
+        {run.plan && <PlanCard run={run} onChanged={onChanged} onEditPlan={onEditPlan} readonly />}
+        <article className="message user-message">
+          <div className="message-content">{updatingState.prompt}</div>
+        </article>
+        <PlanningMessage state={updatingState} />
+      </>
+    );
+  }
+
+  const renderedHistory = history.map((item, index) => (
+    <PlanHistoryBlock key={`${run.id}-history-${index}`} item={item} run={run} />
+  ));
+
+  if (run.status === "planning") {
+    return (
+      <>
+        {renderedHistory}
+        <PlanningMessage
+          state={{
+            prompt: run.plan?.goal ?? "Preparing your research plan",
+            mode: hasHistory ? "update" : "create",
+            runId: run.id
+          }}
+        />
+      </>
+    );
+  }
+  if (run.status === "awaiting_approval") {
+    return (
+      <>
+        {renderedHistory}
+        <PlanCard run={run} onChanged={onChanged} onEditPlan={onEditPlan} />
+      </>
+    );
+  }
+  return (
+    <>
+      {renderedHistory}
+      <article className="message assistant-message">
+        <RunSummary run={run} />
+      </article>
+    </>
+  );
+}
+
+function PlanHistoryBlock({
+  item,
+  run
+}: {
+  item: NonNullable<ResearchRunSummary["plan_history"]>[number];
+  run: ResearchRunSummary;
+}) {
+  return (
+    <>
+      <PlanCard run={{ ...run, plan: item.plan, status: "awaiting_approval" }} readonly />
+      {item.feedback && (
+        <article className="message user-message">
+          <div className="message-content">{item.feedback}</div>
+        </article>
+      )}
+    </>
+  );
+}
+
+function PlanningMessage({ state }: { state: PlanningState }) {
+  const title = state.mode === "update" ? "Updating research plan" : "Making a research plan";
+  return (
+    <article className="message assistant-message planning-message" role="status">
+      <span className="thinking-dot" />
+      <div>
+        <strong>{title}</strong>
+        <p>{state.prompt}</p>
+      </div>
+    </article>
+  );
+}
+
+function MessageBlock({
+  message,
+  onRunChanged,
+  onEditPlan
+}: {
+  message: Conversation["messages"][number];
+  onRunChanged: () => Promise<void>;
+  onEditPlan: (target: ReplyTarget) => void;
+}) {
   const isUser = message.role === "user";
   return (
     <article className={isUser ? "message user-message" : "message assistant-message"}>
@@ -190,18 +397,40 @@ function MessageBlock({ message, onRunChanged }: { message: Conversation["messag
         <div className="message-content">{message.content}</div>
       ) : (
         <div className="message-content markdown-content">
-          <ReactMarkdown>{message.content}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ href, children }) => (
+                <a className="markdown-source-chip" href={href} target="_blank" rel="noreferrer">
+                  {children}
+                  <ExternalLink size={12} />
+                </a>
+              )
+            }}
+          >
+            {formatReportMarkdown(message.content)}
+          </ReactMarkdown>
         </div>
       )}
-      {!isUser && message.research_run?.status === "awaiting_approval" && <PlanCard run={message.research_run} onChanged={onRunChanged} />}
+      {!isUser && message.research_run?.status === "awaiting_approval" && (
+        <PlanCard run={message.research_run} onChanged={onRunChanged} onEditPlan={onEditPlan} />
+      )}
     </article>
   );
 }
 
-function PlanCard({ run, onChanged }: { run: ResearchRunSummary; onChanged: () => Promise<void> }) {
+function PlanCard({
+  run,
+  onChanged,
+  onEditPlan,
+  readonly = false
+}: {
+  run: ResearchRunSummary;
+  onChanged?: () => Promise<void>;
+  onEditPlan?: (target: ReplyTarget) => void;
+  readonly?: boolean;
+}) {
   const auth = useAppAuth();
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plan = run.plan;
@@ -211,26 +440,9 @@ function PlanCard({ run, onChanged }: { run: ResearchRunSummary; onChanged: () =
     setError(null);
     try {
       await approveResearchRun(run.id, auth.getToken);
-      await onChanged();
+      await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not approve plan");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function revise(event: FormEvent) {
-    event.preventDefault();
-    if (!feedback.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await sendPlanFeedback(run.id, feedback.trim(), auth.getToken);
-      setFeedback("");
-      setFeedbackOpen(false);
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not revise plan");
     } finally {
       setBusy(false);
     }
@@ -245,27 +457,31 @@ function PlanCard({ run, onChanged }: { run: ResearchRunSummary; onChanged: () =
       <p>{plan.goal}</p>
       <ol>
         {plan.steps.map((step, index) => (
-          <li key={`${step}-${index}`}>{step}</li>
+          <li key={`${step}-${index}`}>{stripLeadingNumber(step)}</li>
         ))}
       </ol>
       <p className="muted">{plan.expected_output}</p>
-      <div className="plan-actions">
-        <button className="button primary" onClick={approve} disabled={busy}>
-          <Check size={16} />
-          Approve
-        </button>
-        <button className="button" onClick={() => setFeedbackOpen((value) => !value)} disabled={busy}>
-          <Edit3 size={16} />
-          Edit
-        </button>
-      </div>
-      {feedbackOpen && (
-        <form className="feedback-form" onSubmit={revise}>
-          <textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Tell the agent what to change..." />
-          <button className="button primary" disabled={busy || !feedback.trim()}>
-            Regenerate plan
+      {!readonly && (
+        <div className="plan-actions">
+          <button className="button primary" onClick={approve} disabled={busy}>
+            <Check size={16} />
+            Approve
           </button>
-        </form>
+          <button
+            className="button"
+            onClick={() =>
+              onEditPlan?.({
+                runId: run.id,
+                title: "Research plan",
+                excerpt: `${plan.title}: ${plan.goal}`
+              })
+            }
+            disabled={busy}
+          >
+            <Edit3 size={16} />
+            Edit
+          </button>
+        </div>
       )}
       {error && <p className="error-text">{error}</p>}
     </section>
@@ -279,7 +495,9 @@ function RunSummary({ run }: { run: ResearchRunSummary }) {
   const [loading, setLoading] = useState(false);
   const label = useMemo(() => {
     if (run.status === "completed") return `Agent researched for ${formatDuration(run.duration_seconds)}`;
+    if (run.status === "queued") return "Research queued...";
     if (run.status === "running") return "Agent is researching...";
+    if (run.status === "failed") return "Research failed";
     return "Agent is preparing research...";
   }, [run]);
 
@@ -293,6 +511,16 @@ function RunSummary({ run }: { run: ResearchRunSummary }) {
     }
   }
 
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      getResearchEvents(run.id, auth.getToken)
+        .then(setEvents)
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [open, run.id]);
+
   return (
     <>
       <button className="run-summary" onClick={openEvents}>
@@ -305,7 +533,7 @@ function RunSummary({ run }: { run: ResearchRunSummary }) {
             <div className="modal-header">
               <div>
                 <div className="section-eyebrow">Agent process</div>
-                <h2>Full research log</h2>
+                <h2>Research history</h2>
               </div>
               <button className="icon-button" onClick={() => setOpen(false)} aria-label="Close process log">
                 <X size={18} />
@@ -323,11 +551,7 @@ function RunSummary({ run }: { run: ResearchRunSummary }) {
                     <div>
                       <h3>{event.title}</h3>
                       <p>{event.content}</p>
-                      {event.url && (
-                        <a href={event.url} target="_blank" rel="noreferrer">
-                          {event.url}
-                        </a>
-                      )}
+                      {event.url && <SourceChip url={event.url} />}
                     </div>
                   </div>
                 ))}
@@ -340,19 +564,48 @@ function RunSummary({ run }: { run: ResearchRunSummary }) {
   );
 }
 
+function SourceChip({ url }: { url: string }) {
+  let label = "Source";
+  try {
+    label = new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    label = "Open source";
+  }
+  return (
+    <a className="source-chip" href={url} target="_blank" rel="noreferrer">
+      <ExternalLink size={13} />
+      {label}
+    </a>
+  );
+}
+
 function Composer({
   value,
   onChange,
   onSubmit,
   disabled,
-  placeholder
+  placeholder,
+  replyTarget,
+  onCancelReply,
+  autoFocusKey
 }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void | Promise<void>;
   disabled?: boolean;
   placeholder: string;
+  replyTarget?: ReplyTarget | null;
+  onCancelReply?: () => void;
+  autoFocusKey?: string;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (autoFocusKey) {
+      textareaRef.current?.focus();
+    }
+  }, [autoFocusKey]);
+
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     void onSubmit();
@@ -360,7 +613,20 @@ function Composer({
 
   return (
     <form className="composer" onSubmit={handleSubmit}>
+      {replyTarget && (
+        <div className="reply-preview">
+          <div className="reply-icon">↳</div>
+          <div>
+            <strong>Replying to {replyTarget.title}</strong>
+            <p>{replyTarget.excerpt}</p>
+          </div>
+          <button type="button" className="reply-close" onClick={onCancelReply} aria-label="Cancel reply">
+            <X size={16} />
+          </button>
+        </div>
+      )}
       <textarea
+        ref={textareaRef}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {

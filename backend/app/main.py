@@ -8,9 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import CurrentUser, get_current_user
+from .agent_services import make_plan
 from .config import get_settings
 from .database import Base, engine, get_db
-from .mock_agent import build_events, build_plan, build_report, build_research_intro, title_from_prompt
+from .migrations import apply_lightweight_migrations
+from .mock_agent import title_from_prompt
 from .models import Conversation, Message, MessageRole, ResearchEvent, ResearchPlanFeedback, ResearchReport, ResearchRun, RunStatus
 from .schemas import (
     ApproveRunResponse,
@@ -42,6 +44,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    apply_lightweight_migrations(engine)
 
 
 @app.get("/health")
@@ -76,6 +79,7 @@ def run_summary(run: ResearchRun) -> ResearchRunSummary:
         id=run.id,
         status=run.status,
         plan=run.plan,
+        plan_history=run.plan_history or [],
         duration_seconds=run.duration_seconds,
         created_at=run.created_at,
     )
@@ -87,7 +91,7 @@ def conversation_response(db: Session, conversation: Conversation) -> Conversati
     pending_runs = [
         run_summary(run)
         for run in runs
-        if run.status in {RunStatus.awaiting_approval.value, RunStatus.planning.value, RunStatus.running.value}
+        if run.status in {RunStatus.awaiting_approval.value, RunStatus.planning.value, RunStatus.queued.value, RunStatus.running.value}
         and not any(message.research_run_id == run.id for message in conversation.messages)
     ]
     messages = [
@@ -123,10 +127,15 @@ def create_planned_run(db: Session, user_id: UUID, prompt: str, conversation: Co
     run = ResearchRun(
         conversation_id=conversation.id,
         trigger_message_id=user_message.id,
-        status=RunStatus.awaiting_approval.value,
-        plan=build_plan(prompt),
+        status=RunStatus.planning.value,
+        plan={},
+        plan_history=[],
     )
     db.add(run)
+    db.commit()
+    db.refresh(run)
+    run.plan = make_plan(prompt, None, settings)
+    run.status = RunStatus.awaiting_approval.value
     db.commit()
     db.refresh(conversation)
     db.refresh(user_message)
@@ -154,7 +163,19 @@ def revise_plan(run_id: UUID, payload: PlanFeedbackRequest, db: Db, current: Aut
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only unapproved plans can be revised")
     trigger_message = db.get(Message, run.trigger_message_id)
     prompt = trigger_message.content if trigger_message else run.plan.get("goal", "Research request")
-    new_plan = build_plan(prompt, payload.message)
+    plan_history = list(run.plan_history or [])
+    if run.plan:
+        plan_history.append(
+            {
+                "plan": run.plan,
+                "feedback": payload.message,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    run.plan_history = plan_history
+    run.status = RunStatus.planning.value
+    db.commit()
+    new_plan = make_plan(prompt, payload.message, settings)
     db.add(ResearchPlanFeedback(run_id=run.id, message=payload.message, generated_plan=new_plan))
     run.plan = new_plan
     run.status = RunStatus.awaiting_approval.value
@@ -168,37 +189,29 @@ def approve_run(run_id: UUID, db: Db, current: AuthUser) -> ApproveRunResponse:
     run = ensure_run(db, current.user.id, run_id)
     if run.status == RunStatus.completed.value:
         return ApproveRunResponse(run_id=run.id, status=run.status, duration_seconds=run.duration_seconds or 0)
+    if run.status in {RunStatus.queued.value, RunStatus.running.value}:
+        return ApproveRunResponse(run_id=run.id, status=run.status, duration_seconds=run.duration_seconds)
     if run.status not in {RunStatus.awaiting_approval.value, RunStatus.planning.value}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run cannot be approved from its current state")
 
-    trigger_message = db.get(Message, run.trigger_message_id)
-    prompt = trigger_message.content if trigger_message else run.plan.get("goal", "Research request")
     now = datetime.now(timezone.utc)
-    duration_seconds = 154
-    run.status = RunStatus.completed.value
+    run.status = RunStatus.queued.value
     run.approved_at = now
-    run.started_at = now
-    run.completed_at = now
-    run.duration_seconds = duration_seconds
-
-    intro = Message(conversation_id=run.conversation_id, role=MessageRole.assistant.value, content=build_research_intro(prompt))
-    db.add(intro)
-    for event in build_events(prompt):
-        db.add(ResearchEvent(run_id=run.id, **event))
-
-    report_text = build_report(prompt)
-    report_message = Message(
-        conversation_id=run.conversation_id,
-        role=MessageRole.assistant.value,
-        content=report_text,
-        research_run_id=run.id,
+    run.model_name = settings.openai_model
+    run.search_provider = "tavily"
+    db.add(
+        ResearchEvent(
+            run_id=run.id,
+            sequence_number=1,
+            event_type="run_queued",
+            title="Research queued",
+            content="The approved plan is queued for the research worker.",
+            event_metadata={"queued_by": "api"},
+        )
     )
-    db.add(report_message)
-    db.flush()
-    db.add(ResearchReport(run_id=run.id, message_id=report_message.id, markdown=report_text))
     db.commit()
     db.refresh(run)
-    return ApproveRunResponse(run_id=run.id, status=run.status, duration_seconds=duration_seconds)
+    return ApproveRunResponse(run_id=run.id, status=run.status, duration_seconds=run.duration_seconds)
 
 
 @app.get("/api/conversations", response_model=list[ConversationSummary])

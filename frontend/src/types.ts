@@ -6,10 +6,17 @@ export type ResearchPlan = {
   revision_note?: string | null;
 };
 
+export type PlanHistoryItem = {
+  plan: ResearchPlan;
+  feedback?: string | null;
+  created_at?: string | null;
+};
+
 export type ResearchRunSummary = {
   id: string;
-  status: "planning" | "awaiting_approval" | "running" | "completed" | "failed";
+  status: "planning" | "awaiting_approval" | "queued" | "running" | "completed" | "failed" | "cancelled";
   plan: ResearchPlan | null;
+  plan_history: PlanHistoryItem[];
   duration_seconds: number | null;
   created_at: string;
 };

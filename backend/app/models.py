@@ -17,9 +17,11 @@ class MessageRole(str, Enum):
 class RunStatus(str, Enum):
     planning = "planning"
     awaiting_approval = "awaiting_approval"
+    queued = "queued"
     running = "running"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class User(Base):
@@ -68,15 +70,20 @@ class ResearchRun(Base):
     trigger_message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     status: Mapped[str] = mapped_column(String(40), default=RunStatus.awaiting_approval.value)
     plan: Mapped[dict] = mapped_column(JSONB, default=dict)
+    plan_history: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    search_provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="research_runs")
     events: Mapped[list["ResearchEvent"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     report: Mapped["ResearchReport | None"] = relationship(back_populates="run", cascade="all, delete-orphan")
+    subtasks: Mapped[list["ResearchSubtask"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
 class ResearchPlanFeedback(Base):
@@ -103,6 +110,57 @@ class ResearchEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     run: Mapped[ResearchRun] = relationship(back_populates="events")
+
+
+class ResearchSubtask(Base):
+    __tablename__ = "research_subtasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    instructions: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    run: Mapped[ResearchRun] = relationship(back_populates="subtasks")
+    sources: Mapped[list["ResearchSource"]] = relationship(back_populates="subtask", cascade="all, delete-orphan")
+    findings: Mapped[list["ResearchFinding"]] = relationship(back_populates="subtask", cascade="all, delete-orphan")
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), index=True)
+    subtask_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_subtasks.id", ondelete="CASCADE"), index=True)
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    relevance: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    subtask: Mapped[ResearchSubtask] = relationship(back_populates="sources")
+
+
+class ResearchFinding(Base):
+    __tablename__ = "research_findings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), index=True)
+    subtask_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_subtasks.id", ondelete="CASCADE"), index=True)
+    claim: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_urls: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    confidence: Mapped[str] = mapped_column(String(40), default="medium")
+    gaps: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    subtask: Mapped[ResearchSubtask] = relationship(back_populates="findings")
 
 
 class ResearchReport(Base):

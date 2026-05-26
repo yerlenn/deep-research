@@ -16,5 +16,20 @@ services:
       timeout: 5s
       retries: 10
 
+  worker:
+    profiles: ["worker"]
+    image: python:3.11-slim
+    working_dir: /app/backend
+    command: sh -c "pip install -r requirements.txt && python -m app.worker"
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://deep_research:deep_research@postgres:5432/deep_research
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:

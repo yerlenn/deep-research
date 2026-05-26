@@ -50,6 +50,26 @@ Clerk handles sign-in/sign-up and session management. The backend verifies Clerk
 
 For local UI development without Clerk, set `VITE_AUTH_DISABLED=true` in `frontend/.env` and `AUTH_DISABLED=true` in `backend/.env`. Do not use those settings in production.
 
+## Real Research Worker
+
+Set these backend environment variables before running real agent research:
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini
+TAVILY_API_KEY=...
+```
+
+Run the worker in a separate terminal:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.worker
+```
+
+The API queues approved research runs. The worker claims queued runs, executes the LangGraph research workflow, writes progress events, and saves the final report.
+
 ## Production Direction
 
 - Frontend: Vercel or S3 + CloudFront.

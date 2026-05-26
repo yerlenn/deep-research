@@ -35,6 +35,7 @@ class ResearchRunSummary(BaseModel):
     id: UUID
     status: str
     plan: dict[str, Any] | None = None
+    plan_history: list[dict[str, Any]] = Field(default_factory=list)
     duration_seconds: int | None = None
     created_at: datetime
 
@@ -82,4 +83,4 @@ class PlanFeedbackResponse(BaseModel):
 class ApproveRunResponse(BaseModel):
     run_id: UUID
     status: str
-    duration_seconds: int
+    duration_seconds: int | None = None
