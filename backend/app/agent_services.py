@@ -87,6 +87,32 @@ def domain_from_url(url: str) -> str | None:
         return None
 
 
+def source_label(url: str) -> str:
+    domain = domain_from_url(url)
+    return domain.replace("www.", "") if domain else "source"
+
+
+def unique_source_urls(findings: list[dict[str, Any]], limit: int = 8) -> list[str]:
+    urls: list[str] = []
+    for finding in findings:
+        for url in finding.get("source_urls") or []:
+            if url and url not in urls:
+                urls.append(url)
+            if len(urls) >= limit:
+                return urls
+    return urls
+
+
+def ensure_report_has_sources(report: str, findings: list[dict[str, Any]]) -> str:
+    if re.search(r"\[[^\]]+\]\(https?://", report) or re.search(r"https?://", report):
+        return report
+    urls = unique_source_urls(findings)
+    if not urls:
+        return report
+    source_lines = [f"- [{source_label(url)}]({url})" for url in urls]
+    return f"{report.rstrip()}\n\n## Sources consulted\n" + "\n".join(source_lines)
+
+
 def research_subtask(prompt: str, subtask: dict[str, Any], search_results: list[dict[str, Any]], settings: Settings) -> SubtaskResult:
     source_summaries = [
         {
@@ -118,12 +144,19 @@ def research_subtask(prompt: str, subtask: dict[str, Any], search_results: list[
         [
             (
                 "system",
-                "You are a research subagent. Use only the provided search/source material. Return concise, source-backed findings.",
+                "You are a research subagent. Use only the provided search/source material. Return concise findings. "
+                "Every factual finding must include source_urls from the provided sources when a source supports it. "
+                "If no source supports a claim, mark confidence low and explain the gap instead of inventing evidence.",
             ),
             (
                 "human",
                 json.dumps(
-                    {"prompt": prompt, "subtask": subtask, "sources": source_summaries},
+                    {
+                        "prompt": prompt,
+                        "subtask": subtask,
+                        "sources": source_summaries,
+                        "citation_rule": "Attach the relevant source URL(s) to each finding.source_urls. Prefer 1-3 strongest URLs.",
+                    },
                     ensure_ascii=False,
                 ),
             ),
@@ -144,15 +177,25 @@ def synthesize_report(prompt: str, plan: dict[str, Any], findings: list[dict[str
                 "You write careful deep research reports. Use the supplied findings only, state uncertainty, and avoid unsupported claims. "
                 "Use valid GitHub-flavored Markdown. For tables, put each row on its own line with a proper separator row. "
                 "Do not paste raw URLs inline. Cite sources with Markdown links using short source names. "
+                "Cite important factual claims, rankings, dates, numbers, funding amounts, quotes, and comparative table rows when source URLs are available. "
+                "Do not cite every sentence; cite where a reader would naturally want to verify the claim. "
                 "Do not end with offers, follow-up suggestions, or phrases like 'If you want', 'I can', or 'Would you like'.",
             ),
             (
                 "human",
-                json.dumps({"prompt": prompt, "plan": plan, "findings": findings}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "prompt": prompt,
+                        "plan": plan,
+                        "findings": findings,
+                        "citation_rule": "Use the source_urls attached to findings. Add citations near the claim or in the relevant table cell.",
+                    },
+                    ensure_ascii=False,
+                ),
             ),
         ]
     )
-    return str(response.content)
+    return ensure_report_has_sources(str(response.content), findings)
 
 
 def critique_report(prompt: str, plan: dict[str, Any], report: str, findings: list[dict[str, Any]], settings: Settings) -> CritiqueResult:
@@ -164,7 +207,8 @@ def critique_report(prompt: str, plan: dict[str, Any], report: str, findings: li
         [
             (
                 "system",
-                "You are a strict research QA reviewer. Check if the report answers the prompt using only the supplied findings.",
+                "You are a strict research QA reviewer. Check if the report answers the prompt using only the supplied findings. "
+                "Also check that important factual claims have Markdown citations when the supplied findings include source URLs.",
             ),
             (
                 "human",

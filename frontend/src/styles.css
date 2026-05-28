@@ -379,6 +379,7 @@ a {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: none;
   display: flex;
   flex-direction: column;
@@ -394,6 +395,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
 .section-eyebrow {
@@ -411,6 +413,9 @@ a {
 
 .markdown-content {
   white-space: normal;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .markdown-content h1,
@@ -450,28 +455,42 @@ a {
   margin: 5px 0;
 }
 
-.markdown-content table {
+.markdown-table-scroll {
   width: 100%;
+  max-width: 100%;
   margin: 18px 0 22px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.markdown-table-scroll table {
+  width: 100%;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 15px;
   line-height: 1.45;
+  table-layout: auto;
 }
 
-.markdown-content th,
-.markdown-content td {
+.markdown-table-scroll th,
+.markdown-table-scroll td {
   border: 1px solid var(--border);
   padding: 9px 10px;
   text-align: left;
   vertical-align: top;
+  min-width: 120px;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
-.markdown-content th {
+.markdown-table-scroll th {
   background: #eeeae2;
   font-weight: 620;
 }
 
-.markdown-content tr:nth-child(even) td {
+.markdown-table-scroll tr:nth-child(even) td {
   background: #f8f6f0;
 }
 
@@ -505,6 +524,7 @@ a {
 
 .assistant-message .message-content {
   max-width: 760px;
+  min-width: 0;
 }
 
 .composer-dock {
@@ -513,9 +533,9 @@ a {
   right: 0;
   bottom: 0;
   z-index: 9;
-  width: min(860px, calc(100% - 48px));
+  width: min(860px, 100%);
   margin: 0 auto;
-  padding: 28px 0 28px;
+  padding: 28px 24px;
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -535,6 +555,7 @@ a {
 }
 
 .composer-dock .composer {
+  width: 100%;
   pointer-events: auto;
 }
 

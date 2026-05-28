@@ -405,6 +405,11 @@ function MessageBlock({
                   {children}
                   <ExternalLink size={12} />
                 </a>
+              ),
+              table: ({ children }) => (
+                <div className="markdown-table-scroll">
+                  <table>{children}</table>
+                </div>
               )
             }}
           >
